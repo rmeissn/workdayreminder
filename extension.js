@@ -6,9 +6,11 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-const REPAINT_SECONDS = 2;
+const REPAINT_SECONDS = 10;
 const CHECK_TIMER_SECONDS = 10;
+const UPDATE_MENU_SECONDS = 30;
 
 const repaint = (area, percentageDone) => {
     let context = area.get_context();
@@ -72,13 +74,46 @@ export default class WorkDayReminder extends Extension {
         if (this._timers && this._indicator && this._indicator.menu) {
             this._timers.forEach((timer, index) => {
                 if (timer && timer.name && typeof timer.timeBetweenNotifications === 'number') {
-                    const menuItem = this._indicator.menu.addAction(`Reset ${timer.name} Timer`, () => {
+                    const menuItem = this._indicator.menu.addAction(this._getTimerMenuText(timer.name, index), () => {
                         this.addNewTimer(index, timer.timeBetweenNotifications);
                     });
                     this._timerMenuItems.push(menuItem);
                 }
             });
+            
+            // Add separator and stop all timers button
+            if (this._timers.length > 0) {
+                this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+                this._indicator.menu.addAction('Stop All Timers', () => {
+                    this.stopAllTimers();
+                });
+            }
         }
+        
+        // Add a menu item to open the preferences window (always at the bottom)
+        this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._indicator.menu.addAction('Preferences', () => this.openPreferences());
+    }
+
+    _getTimerMenuText(timerName, timerIndex) {
+        const remainingTime = this.getRemainingTimeForTimer(timerIndex);
+        if (remainingTime === null) {
+            return `Reset ${timerName} Timer`;
+        }
+        return `Reset ${timerName} Timer [${remainingTime} min]`;
+    }
+
+    _updateTimerMenuTexts() {
+        if (!this._timerMenuItems || !this._timers) {
+            return;
+        }
+        
+        this._timerMenuItems.forEach((menuItem, index) => {
+            if (this._timers[index] && this._timers[index].name) {
+                const newText = this._getTimerMenuText(this._timers[index].name, index);
+                menuItem.label.set_text(newText);
+            }
+        });
     }
 
     enable() {
@@ -103,9 +138,6 @@ export default class WorkDayReminder extends Extension {
         
         this._indicator.add_child(this._container);
 
-         // Add a menu item to open the preferences window
-        this._indicator.menu.addAction('Preferences', () => this.openPreferences());
-
         this._settings = this.getSettings();
         
         // Initialize timer menu items array
@@ -124,6 +156,9 @@ export default class WorkDayReminder extends Extension {
 
         // Initialize active timers array
         this._activeTimers = [];
+
+        // Check for missed activation before starting timers
+        this._checkForMissedActivation();
 
         // Start all timers automatically
         if (this._timers && this._timers.length > 0) {
@@ -144,8 +179,17 @@ export default class WorkDayReminder extends Extension {
         });
         this._checkTimeOut = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, CHECK_TIMER_SECONDS, () => {
             this.check();
+            // Also check for missed activation every time we check timers
+            this._checkForMissedActivation();
             return GLib.SOURCE_CONTINUE;
         });
+        this._updateMenuTimeOut = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, UPDATE_MENU_SECONDS, () => {
+            this._updateTimerMenuTexts();
+            return GLib.SOURCE_CONTINUE;
+        });
+        
+        // Schedule daily activation and deactivation
+        this._scheduleTimerActivation();
     }
 
     check() {
@@ -188,8 +232,11 @@ export default class WorkDayReminder extends Extension {
                     console.log("Decline");
                     this.addNewTimer(activeTimer.timerIndex, timer.extraTime);
                 };
-                            
-                notification.connect('activated', accept);
+                
+                // Clicking Notification X button
+                notification.connect('dismissed', decline);
+                // Clicking the Notification itself
+                notification.connect('activated', decline);
                 notification.addAction(timer.successButtonText, accept);
                 notification.addAction('Wait a bit', decline);
 
@@ -234,6 +281,9 @@ export default class WorkDayReminder extends Extension {
         if (this._label) {
             this._label.set_text(this.getCurrentTimerName());
         }
+        
+        // Immediately update menu texts to show new remaining time
+        this._updateTimerMenuTexts();
     }
 
     calculatePercentageDone() {
@@ -268,6 +318,26 @@ export default class WorkDayReminder extends Extension {
         return this._timers[nextToFinish.timerIndex].name || 'Timer';
     }
 
+    getRemainingTimeForTimer(timerIndex) {
+        if (!this._activeTimers || this._activeTimers.length === 0) {
+            return null;
+        }
+        
+        const activeTimer = this._activeTimers.find(timer => timer.timerIndex === timerIndex);
+        if (!activeTimer) {
+            return null;
+        }
+        
+        const currentTime = new Date();
+        const remainingMs = activeTimer.endTime - currentTime;
+        
+        if (remainingMs <= 0) {
+            return 0;
+        }
+        
+        return Math.ceil(remainingMs / (1000 * 60)); // Convert to minutes and round up
+    }
+
     openPreferences() {
         try {
             // Use the built-in openPreferences method from Extension class
@@ -279,6 +349,176 @@ export default class WorkDayReminder extends Extension {
         }
     }
 
+    stopAllTimers() {
+        // Clear all active timers
+        this._activeTimers = [];
+        
+        // Update the label
+        if (this._label) {
+            this._label.set_text('No Timer');
+        }
+        
+        // Force repaint to show empty progress
+        if (this._icon) {
+            this._icon.queue_repaint();
+        }
+        
+        // Immediately update menu texts to remove remaining time indicators
+        this._updateTimerMenuTexts();
+        
+        console.log('All timers stopped');
+    }
+
+    _parseTimeString(timeString) {
+        const [hour, minute] = timeString.split(':').map(Number);
+        return { hour, minute };
+    }
+
+    _calculateTimeUntilTarget(targetTimeString) {
+        const now = new Date();
+        const target = new Date(now);
+        const { hour, minute } = this._parseTimeString(targetTimeString);
+        
+        // Set to target time today
+        target.setHours(hour, minute, 0, 0);
+        
+        // If it's already past target time today, set to target time tomorrow
+        if (now >= target) {
+            target.setDate(target.getDate() + 1);
+        }
+        
+        return target.getTime() - now.getTime();
+    }
+
+    _isWithinActiveHours() {
+        const now = new Date();
+        const currentHour = now.getHours();
+        const currentMinute = now.getMinutes();
+        const currentTimeInMinutes = currentHour * 60 + currentMinute;
+        
+        const activateTime = this._settings.get_string('activate-time');
+        const deactivateTime = this._settings.get_string('deactivate-time');
+        
+        const { hour: activateHour, minute: activateMinute } = this._parseTimeString(activateTime);
+        const { hour: deactivateHour, minute: deactivateMinute } = this._parseTimeString(deactivateTime);
+        
+        const activateTimeInMinutes = activateHour * 60 + activateMinute;
+        const deactivateTimeInMinutes = deactivateHour * 60 + deactivateMinute;
+        
+        // Handle cases where deactivate time is next day (e.g., 23:00 to 07:00)
+        if (deactivateTimeInMinutes <= activateTimeInMinutes) {
+            // Time span crosses midnight
+            return currentTimeInMinutes >= activateTimeInMinutes || currentTimeInMinutes < deactivateTimeInMinutes;
+        } else {
+            // Normal case (e.g., 07:00 to 16:00)
+            return currentTimeInMinutes >= activateTimeInMinutes && currentTimeInMinutes < deactivateTimeInMinutes;
+        }
+    }
+
+    _startAllTimers() {
+        // Only start timers if we're within active hours
+        if (!this._isWithinActiveHours()) {
+            console.log('Not within active hours - timers not started');
+            return;
+        }
+        
+        // Start all timers automatically
+        if (this._timers && this._timers.length > 0) {
+            this._timers.forEach((timer, index) => {
+                if (timer && typeof timer.timeBetweenNotifications === 'number') {
+                    this.addNewTimer(index, timer.timeBetweenNotifications);
+                }
+            });
+        }
+        console.log('All timers started');
+    }
+
+    _checkForMissedActivation() {
+        // Check if we missed the activation time while system was suspended
+        const now = new Date();
+        const lastActivationKey = 'last-activation-date';
+        
+        try {
+            const lastActivationString = this._settings.get_string(lastActivationKey);
+            const lastActivationDate = lastActivationString ? new Date(lastActivationString) : null;
+            
+            const activateTime = this._settings.get_string('activate-time');
+            const { hour, minute } = this._parseTimeString(activateTime);
+            
+            // Get today's activation time
+            const todayActivation = new Date(now);
+            todayActivation.setHours(hour, minute, 0, 0);
+            
+            // If it's past activation time today and we haven't activated today, and we're within active hours
+            if (now >= todayActivation && (!lastActivationDate || lastActivationDate < todayActivation) && this._isWithinActiveHours()) {
+                console.log('Missed activation detected - performing activation now');
+                this.stopAllTimers();
+                this._startAllTimers();
+                
+                // Store today's activation
+                this._settings.set_string(lastActivationKey, now.toISOString());
+            }
+        } catch (e) {
+            console.warn('Error checking for missed activation:', e);
+        }
+    }
+
+    _scheduleTimerActivation() {
+        // Cancel existing timeouts
+        if (this._activationTimeOut) {
+            GLib.Source.remove(this._activationTimeOut);
+        }
+        if (this._deactivationTimeOut) {
+            GLib.Source.remove(this._deactivationTimeOut);
+        }
+        
+        const activateTime = this._settings.get_string('activate-time');
+        const deactivateTime = this._settings.get_string('deactivate-time');
+        
+        // Schedule activation
+        const msUntilActivation = this._calculateTimeUntilTarget(activateTime);
+        const secondsUntilActivation = Math.ceil(msUntilActivation / 1000);
+        
+        console.log(`Scheduling timer activation in ${secondsUntilActivation} seconds (${Math.ceil(msUntilActivation / 1000 / 60 / 60)} hours) at ${activateTime}`);
+        
+        this._activationTimeOut = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, secondsUntilActivation, () => {
+            console.log(`Timer activation at ${activateTime} triggered`);
+            this.stopAllTimers();
+            // Small delay to ensure stopping is complete
+            GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
+                this._startAllTimers();
+                
+                // Store the activation timestamp
+                const now = new Date();
+                this._settings.set_string('last-activation-date', now.toISOString());
+                
+                // Schedule the next activation
+                this._scheduleTimerActivation();
+                return GLib.SOURCE_REMOVE;
+            });
+            return GLib.SOURCE_REMOVE;
+        });
+        
+        // Schedule deactivation
+        const msUntilDeactivation = this._calculateTimeUntilTarget(deactivateTime);
+        const secondsUntilDeactivation = Math.ceil(msUntilDeactivation / 1000);
+        
+        console.log(`Scheduling timer deactivation in ${secondsUntilDeactivation} seconds (${Math.ceil(msUntilDeactivation / 1000 / 60 / 60)} hours) at ${deactivateTime}`);
+        
+        this._deactivationTimeOut = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, secondsUntilDeactivation, () => {
+            console.log(`Timer deactivation at ${deactivateTime} triggered`);
+            this.stopAllTimers();
+            
+            // Store the deactivation timestamp
+            const now = new Date();
+            this._settings.set_string('last-deactivation-date', now.toISOString());
+            
+            // Schedule the next deactivation
+            this._scheduleTimerActivation();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
     disable() {
         // Remove timeouts
         if (this._repaintTimeOut) {
@@ -288,6 +528,18 @@ export default class WorkDayReminder extends Extension {
         if (this._checkTimeOut) {
             GLib.Source.remove(this._checkTimeOut);
             this._checkTimeOut = null;
+        }
+        if (this._updateMenuTimeOut) {
+            GLib.Source.remove(this._updateMenuTimeOut);
+            this._updateMenuTimeOut = null;
+        }
+        if (this._activationTimeOut) {
+            GLib.Source.remove(this._activationTimeOut);
+            this._activationTimeOut = null;
+        }
+        if (this._deactivationTimeOut) {
+            GLib.Source.remove(this._deactivationTimeOut);
+            this._deactivationTimeOut = null;
         }
         
         // Disconnect settings connection
