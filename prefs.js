@@ -73,50 +73,34 @@ export default class ExamplePreferences extends ExtensionPreferences {
     }
 
     _loadTimers() {
+        const defaultTimer = {"name": "Timer 1", "timeBetweenNotifications": 20, "extraTime": 5, "message": "Time for a break!", "successButtonText": "Got it"};
         try {
-            const timersJson = this._settings.get_string('timers');
-            const timers = JSON.parse(timersJson);
-            // Ensure we have at least one timer
-            if (!timers || timers.length === 0) {
-                return [{"name": "Timer 1", "timeBetweenNotifications": 20, "extraTime": 5, "message": "Time for a break!", "successButtonText": "Got it"}];
-            }
-            return timers;
+            const timers = JSON.parse(this._settings.get_string('timers'));
+            return (timers && timers.length > 0) ? timers : [defaultTimer];
         } catch (e) {
             console.warn('Failed to load timers:', e);
-            return [{"name": "Timer 1", "timeBetweenNotifications": 20, "extraTime": 5, "message": "Time for a break!", "successButtonText": "Got it"}];
+            return [defaultTimer];
         }
     }
 
     _saveTimers() {
-        const timersJson = JSON.stringify(this._timers);
-        console.log('Saving timers JSON:', timersJson);
-        this._settings.set_string('timers', timersJson);
+        this._settings.set_string('timers', JSON.stringify(this._timers));
     }
 
     _addNewTimer() {
-        console.log('Before adding timer - current timers:', JSON.stringify(this._timers));
-        
-        // Find the highest timer number to avoid duplicates
-        let maxTimerNumber = 0;
-        this._timers.forEach(timer => {
+        const maxTimerNumber = Math.max(0, ...this._timers.map(timer => {
             const match = timer.name.match(/Timer (\d+)/);
-            if (match) {
-                const timerNumber = parseInt(match[1]);
-                maxTimerNumber = Math.max(maxTimerNumber, timerNumber);
-            }
-        });
+            return match ? parseInt(match[1]) : 0;
+        }));
         
-        const newTimerNumber = maxTimerNumber + 1;
-        const newTimer = {
-            name: `Timer ${newTimerNumber}`,
+        this._timers.push({
+            name: `Timer ${maxTimerNumber + 1}`,
             timeBetweenNotifications: 20,
             extraTime: 5,
             message: "Time for a break!",
             successButtonText: "Got it"
-        };
+        });
         
-        this._timers.push(newTimer);
-        console.log('After adding timer - current timers:', JSON.stringify(this._timers));
         this._saveTimers();
         this._refreshTimersList();
     }
@@ -137,37 +121,18 @@ export default class ExamplePreferences extends ExtensionPreferences {
     }
 
     _refreshTimersList() {
-        console.log('Refreshing timers list - current timers:', JSON.stringify(this._timers));
-        
-        // Remove all existing timer groups
-        this._timerGroups.forEach(group => {
-            this._page.remove(group);
-        });
+        this._timerGroups.forEach(group => this._page.remove(group));
         this._timerGroups = [];
-
-        // Add timer groups
-        this._timers.forEach((timer, index) => {
-            this._createTimerGroup(timer, index);
-        });
+        this._timers.forEach((timer, index) => this._createTimerGroup(timer, index));
     }
 
     _createTimerGroup(timer, index) {
-        // Create a separate group for each timer
-        const timerGroup = new Adw.PreferencesGroup({
-        });
+        const timerGroup = new Adw.PreferencesGroup({});
         this._page.add(timerGroup);
         this._timerGroups.push(timerGroup);
 
-        // Timer name row
-        const nameRow = new Adw.EntryRow({
-            title: 'Timer Name',
-            text: timer.name,
-        });
-        nameRow.connect('changed', () => {
-            this._updateTimer(index, 'name', nameRow.get_text());
-        });
-
-        // Delete button for the name row (only show if more than one timer exists)
+        // Timer name row with delete button
+        const nameRow = this._createEntryRow('Timer Name', timer.name, index, 'name');
         if (this._timers.length > 1) {
             const deleteButton = new Gtk.Button({
                 icon_name: 'user-trash-symbolic',
@@ -178,114 +143,48 @@ export default class ExamplePreferences extends ExtensionPreferences {
             deleteButton.connect('clicked', () => this._removeTimer(index));
             nameRow.add_suffix(deleteButton);
         }
-
         timerGroup.add(nameRow);
 
-        // Time between notifications row
-        const breakTimeRow = Adw.SpinRow.new_with_range(1, 1440, 1);
-        breakTimeRow.title = 'Time between Notifications';
-        breakTimeRow.subtitle = 'How often to notify you (in minutes)';
-        breakTimeRow.value = timer.timeBetweenNotifications;
-        breakTimeRow.connect('changed', () => {
-            this._updateTimer(index, 'timeBetweenNotifications', breakTimeRow.get_value());
-        });
-        timerGroup.add(breakTimeRow);
+        // Add other rows
+        timerGroup.add(this._createSpinRow('Time between Notifications', 'How often to notify you (in minutes)', timer.timeBetweenNotifications, [1, 1440, 1], index, 'timeBetweenNotifications'));
+        timerGroup.add(this._createSpinRow('Time to add when postponing', 'How much time to wait after postponing the notification (in minutes)', timer.extraTime, [1, 1440, 1], index, 'extraTime'));
+        timerGroup.add(this._createEntryRow('Notification Message', timer.message || 'Time for a break!', index, 'message'));
+        timerGroup.add(this._createEntryRow('Success Button Text', timer.successButtonText || 'Got it', index, 'successButtonText'));
+    }
 
-        // Extra time row
-        const extraTimeRow = Adw.SpinRow.new_with_range(1, 1440, 1);
-        extraTimeRow.title = 'Time to add when postponing';
-        extraTimeRow.subtitle = 'How much time to wait after postponing the notification (in minutes)';
-        extraTimeRow.value = timer.extraTime;
-        extraTimeRow.connect('changed', () => {
-            this._updateTimer(index, 'extraTime', extraTimeRow.get_value());
-        });
-        timerGroup.add(extraTimeRow);
+    _createSpinRow(title, subtitle, value, range, index, property) {
+        const row = Adw.SpinRow.new_with_range(...range);
+        row.title = title;
+        row.subtitle = subtitle;
+        row.value = value;
+        row.connect('changed', () => this._updateTimer(index, property, row.get_value()));
+        return row;
+    }
 
-        // Message row
-        const messageRow = new Adw.EntryRow({
-            title: 'Notification Message',
-            text: timer.message || 'Time for a break!',
-        });
-        messageRow.connect('changed', () => {
-            this._updateTimer(index, 'message', messageRow.get_text());
-        });
-        timerGroup.add(messageRow);
-
-        // Success button text row
-        const successButtonRow = new Adw.EntryRow({
-            title: 'Success Button Text',
-            text: timer.successButtonText || 'Got it',
-        });
-        successButtonRow.connect('changed', () => {
-            this._updateTimer(index, 'successButtonText', successButtonRow.get_text());
-        });
-        timerGroup.add(successButtonRow);
+    _createEntryRow(title, text, index, property) {
+        const row = new Adw.EntryRow({ title, text: text || '' });
+        row.connect('changed', () => this._updateTimer(index, property, row.get_text()));
+        return row;
     }
 
     _createTimeRow(title, subtitle, settingKey) {
-        const timeRow = new Adw.ActionRow({
-            title: title,
-            subtitle: subtitle,
-        });
-
-        // Create container for time inputs with improved styling
+        const timeRow = new Adw.ActionRow({ title, subtitle });
         const timeBox = new Gtk.Box({
             orientation: Gtk.Orientation.HORIZONTAL,
             spacing: 3,
             valign: Gtk.Align.CENTER,
-            css_classes: ['linked'], // Groups the spinbuttons visually
+            css_classes: ['linked'],
         });
 
-        // Hour spinner with improved UX
-        const hourSpin = new Gtk.SpinButton({
-            adjustment: new Gtk.Adjustment({
-                lower: 0,
-                upper: 23,
-                step_increment: 1,
-            }),
-            value: 7,
-            digits: 0,
-            numeric: true,
-            wrap: true, // Allow wrapping from 23 to 0
-            width_chars: 2, // Fixed width for consistent layout
-        });
-
-        // Separator label with subtle styling
-        const separatorLabel = new Gtk.Label({
-            label: ':',
-            css_classes: ['dim-label'],
-        });
-
-        // Minute spinner with improved UX
-        const minuteSpin = new Gtk.SpinButton({
-            adjustment: new Gtk.Adjustment({
-                lower: 0,
-                upper: 59,
-                step_increment: 1,
-            }),
-            value: 0,
-            digits: 0,
-            numeric: true,
-            wrap: true, // Allow wrapping from 59 to 0
-            width_chars: 2, // Fixed width for consistent layout
-        });
-
-        // Format values to always show two digits
-        hourSpin.connect('output', () => {
-            hourSpin.set_text(hourSpin.get_value().toString().padStart(2, '0'));
-            return true;
-        });
-
-        minuteSpin.connect('output', () => {
-            minuteSpin.set_text(minuteSpin.get_value().toString().padStart(2, '0'));
-            return true;
-        });
+        const hourSpin = this._createTimeSpinner(0, 23, 7);
+        const minuteSpin = this._createTimeSpinner(0, 59, 0);
+        const separatorLabel = new Gtk.Label({ label: ':', css_classes: ['dim-label'] });
 
         timeBox.append(hourSpin);
         timeBox.append(separatorLabel);
         timeBox.append(minuteSpin);
 
-        // Load current setting value
+        // Load current setting
         const currentTime = this._settings.get_string(settingKey);
         if (currentTime) {
             const [hour, minute] = currentTime.split(':').map(Number);
@@ -295,24 +194,37 @@ export default class ExamplePreferences extends ExtensionPreferences {
             }
         }
 
-        // Connect change handlers with debouncing
+        // Debounced update handler
         let timeoutId = null;
         const updateTime = () => {
-            if (timeoutId) {
-                clearTimeout(timeoutId);
-            }
+            if (timeoutId) clearTimeout(timeoutId);
             timeoutId = setTimeout(() => {
-                const hour = hourSpin.get_value().toString().padStart(2, '0');
-                const minute = minuteSpin.get_value().toString().padStart(2, '0');
-                const timeString = `${hour}:${minute}`;
+                const timeString = `${hourSpin.get_value().toString().padStart(2, '0')}:${minuteSpin.get_value().toString().padStart(2, '0')}`;
                 this._settings.set_string(settingKey, timeString);
-            }, 200); // Small delay to avoid excessive updates
+            }, 200);
         };
 
         hourSpin.connect('value-changed', updateTime);
         minuteSpin.connect('value-changed', updateTime);
-
         timeRow.add_suffix(timeBox);
         return timeRow;
+    }
+
+    _createTimeSpinner(lower, upper, value) {
+        const spinner = new Gtk.SpinButton({
+            adjustment: new Gtk.Adjustment({ lower, upper, step_increment: 1 }),
+            value,
+            digits: 0,
+            numeric: true,
+            wrap: true,
+            width_chars: 2,
+        });
+        
+        spinner.connect('output', () => {
+            spinner.set_text(spinner.get_value().toString().padStart(2, '0'));
+            return true;
+        });
+        
+        return spinner;
     }
 }

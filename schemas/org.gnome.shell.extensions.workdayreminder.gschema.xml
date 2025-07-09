@@ -1,31 +1,33 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
   <schema id="org.gnome.shell.extensions.workdayreminder" path="/org/gnome/shell/extensions/workdayreminder/">
+    <!-- Timer Configuration -->
     <key name="timers" type="s">
-      <default>'[{"name": "Timer 1", "timeBetweenNotifications": 20, "extraTime": 5, "message": "Time for a break!", "successButtonText": "Got it"}]'</default>
+      <default>'[{"name": "Break Reminder", "timeBetweenNotifications": 25, "extraTime": 5, "message": "Time for a break!", "successButtonText": "Got it"}]'</default>
       <summary>List of timers</summary>
       <description>JSON string containing array of timer configurations</description>
     </key>
-    <key name="last-reset-date" type="s">
-      <default>''</default>
-      <summary>Last reset date</summary>
-      <description>ISO string of the last time timers were reset at 7 AM</description>
-    </key>
+    
+    <!-- Daily Schedule Configuration -->
     <key name="activate-time" type="s">
       <default>'07:00'</default>
       <summary>Timer activation time</summary>
       <description>Time when timers should be activated in the morning (HH:MM format)</description>
     </key>
+    
     <key name="deactivate-time" type="s">
       <default>'16:00'</default>
       <summary>Timer deactivation time</summary>
       <description>Time when timers should be deactivated in the evening (HH:MM format)</description>
     </key>
+    
+    <!-- Internal State Tracking (automatically managed) -->
     <key name="last-activation-date" type="s">
       <default>''</default>
       <summary>Last activation date</summary>
       <description>ISO string of the last time timers were activated</description>
     </key>
+    
     <key name="last-deactivation-date" type="s">
       <default>''</default>
       <summary>Last deactivation date</summary>
