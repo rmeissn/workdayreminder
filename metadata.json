@@ -1,8 +1,8 @@
 {
-  "shell-version": ["45", "46", "47", "48"],
-  "uuid": "workdayreminder@roymeissner.org",
+  "shell-version": ["48"],
+  "uuid": "workdayreminder@rmeissn.gitlab.io",
   "name": "Workday Reminder",
-  "description": "It's important to remember things regularly (standing up, taking a break, etc.) ",
+  "description": "Boost your workday wellness with customizable reminders for breaks, hydration, posture checks, and more. Features smart scheduling, visual progress indicators, and flexible notification postponing to help you maintain healthy work habits without disrupting your flow.\n\nBased on https://github.com/CastilloDel/simplebreakreminder but extensively extended and reworked",
   "url": "https://github.com/rmeissn/workdayreminder",
   "settings-schema": "org.gnome.shell.extensions.workdayreminder"
 }
