@@ -1,8 +1,8 @@
 {
-  "shell-version": ["45", "46", "47"],
-  "uuid": "simplebreakreminder@castillodel.com",
-  "name": "Simple Break Reminder",
-  "description": "It's important to remember to take a break",
-  "url": "https://github.com/CastilloDel/simplebreakreminder",
-  "settings-schema": "org.gnome.shell.extensions.simplebreakreminder"
+  "shell-version": ["45", "46", "47", "48"],
+  "uuid": "workdayreminder@roymeissner.org",
+  "name": "Workday Reminder",
+  "description": "It's important to remember things regularly (standing up, taking a break, etc.) ",
+  "url": "https://github.com/rmeissn/workdayreminder",
+  "settings-schema": "org.gnome.shell.extensions.workdayreminder"
 }

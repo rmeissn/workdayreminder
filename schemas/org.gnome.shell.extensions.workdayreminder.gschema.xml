@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.workdayreminder" path="/org/gnome/shell/extensions/workdayreminder/">
+    <key name="timers" type="s">
+      <default>'[{"name": "Timer 1", "timeBetweenNotifications": 20, "extraTime": 5, "message": "Time for a break!", "successButtonText": "Got it"}]'</default>
+      <summary>List of timers</summary>
+      <description>JSON string containing array of timer configurations</description>
+    </key>
+  </schema>
+</schemalist>
