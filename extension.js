@@ -170,11 +170,15 @@ export default class WorkDayReminder extends Extension {
             const todayActivation = new Date(now);
             todayActivation.setHours(activateHour, activateMinute, 0, 0);
             
+            // Only activate if we're currently within active hours AND haven't activated today yet
             if (now >= todayActivation && (!lastActivationDate || lastActivationDate < todayActivation) && this._isWithinActiveHours()) {
                 console.log('Missed activation detected - performing activation now');
                 this.stopAllTimers();
                 this._startAllTimers();
                 this._settings.set_string(lastActivationKey, now.toISOString());
+            } else if (!this._isWithinActiveHours()) {
+                console.log('Outside active hours - not starting timers');
+                this.stopAllTimers();
             }
         } catch (e) {
             console.warn('Error checking for missed activation:', e);
@@ -229,8 +233,8 @@ export default class WorkDayReminder extends Extension {
             this._settingsConnection = this._settings.connect('changed::timers', () => this._updateTimerMenuItems());
             this._checkForMissedActivation();
             
-            // Only start timers if we don't have any active ones yet
-            if (!this._activeTimers || this._activeTimers.length === 0) {
+            // Only start timers if we don't have any active ones yet AND we're within active hours
+            if ((!this._activeTimers || this._activeTimers.length === 0) && this._isWithinActiveHours()) {
                 this._startValidTimers();
             }
             
@@ -301,6 +305,7 @@ export default class WorkDayReminder extends Extension {
         }
         
         const currentTime = new Date();
+        console.log(`Checking ${this._activeTimers.length} active timers at ${currentTime.toLocaleTimeString()}`);
         
         for (let i = this._activeTimers.length - 1; i >= 0; i--) {
             const activeTimer = this._activeTimers[i];
@@ -311,7 +316,11 @@ export default class WorkDayReminder extends Extension {
                 continue;
             }
             
-            if (activeTimer.endTime < currentTime && !activeTimer.notified) {
+            const timeRemaining = activeTimer.endTime - currentTime;
+            console.log(`Timer ${activeTimer.timerIndex}: ${Math.round(timeRemaining/1000)}s remaining, notified: ${activeTimer.notified}`);
+            
+            if (activeTimer.endTime <= currentTime && !activeTimer.notified) {
+                console.log(`Timer ${activeTimer.timerIndex} has finished! Showing notification.`);
                 if (this._isValidTimerIndex(activeTimer.timerIndex)) {
                     this._showNotification(activeTimer);
                 } else {
@@ -328,29 +337,66 @@ export default class WorkDayReminder extends Extension {
         const timer = this._timers[activeTimer.timerIndex];
         console.log(`Notification for timer ${activeTimer.timerIndex}: ${timer.name}`);
         
-        const source = new MessageTray.Source({
-            title: 'Workday Reminder',
-            icon_name: 'alarm-symbolic'
-        });
-        Main.messageTray.add(source);
+        try {
+            // Create a source for the notification
+            const source = new MessageTray.Source({
+                title: 'Workday Reminder',
+                iconName: 'alarm-symbolic'
+            });
+            
+            // Add the source to the message tray
+            Main.messageTray.add(source);
 
-        const notification = new MessageTray.Notification({
-            source,
-            title: `${timer.name} Reminder`,
-            body: timer.message,
-            urgency: MessageTray.Urgency.CRITICAL,
-        });
-        
-        const resetTimer = (minutes) => () => this.addNewTimer(activeTimer.timerIndex, minutes);
-        const acceptAction = resetTimer(timer.timeBetweenNotifications);
-        const declineAction = resetTimer(timer.extraTime);
-        
-        notification.connect('dismissed', declineAction);
-        notification.connect('activated', declineAction);
-        notification.addAction(timer.successButtonText, acceptAction);
-        notification.addAction('Wait a bit', declineAction);
+            // Create the notification
+            const notification = new MessageTray.Notification({
+                source: source,
+                title: `${timer.name} Reminder`,
+                body: timer.message || `Time for your ${timer.name} break!`,
+                urgency: MessageTray.Urgency.CRITICAL
+            });
+            
+            // Flag to track if an action has already been executed
+            let actionExecuted = false;
+            
+            // Helper function to reset timer
+            const resetTimer = (minutes) => () => {
+                if (actionExecuted) return;
+                actionExecuted = true;
+                console.log(`Resetting timer ${activeTimer.timerIndex} for ${minutes} minutes`);
+                this.addNewTimer(activeTimer.timerIndex, minutes);
+            };
+            
+            const acceptAction = resetTimer(timer.timeBetweenNotifications);
+            const declineAction = resetTimer(timer.extraTime || timer.timeBetweenNotifications);
+            
+            // Add action buttons
+            if (timer.successButtonText) {
+                notification.addAction(timer.successButtonText, acceptAction);
+            }
+            notification.addAction('Wait a bit', declineAction);
+            
+            // Handle notification events
+            notification.connect('destroy', (notification, reason) => {
+                if (!actionExecuted && (reason === MessageTray.NotificationDestroyedReason.DISMISSED || reason === MessageTray.NotificationDestroyedReason.EXPIRED)) {
+                    declineAction();
+                }
+            });
+            notification.connect('activated', () => !actionExecuted && declineAction());
 
-        source.addNotification(notification);
+            // Show the notification
+            source.addNotification(notification);
+            
+        } catch (error) {
+            console.error('Error showing notification:', error);
+            // Fallback: use simple Main.notify
+            Main.notify('Workday Reminder', `${timer.name} - ${timer.message || 'Time for a break!'}`);
+            
+            // Still reset the timer
+            const resetTime = timer.extraTime || timer.timeBetweenNotifications;
+            console.log(`Fallback: resetting timer ${activeTimer.timerIndex} for ${resetTime} minutes`);
+            this.addNewTimer(activeTimer.timerIndex, resetTime);
+        }
+        
         activeTimer.notified = true;
     }
 
