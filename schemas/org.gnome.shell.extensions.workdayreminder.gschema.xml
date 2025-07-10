@@ -21,17 +21,11 @@
       <description>Time when timers should be deactivated in the evening (HH:MM format)</description>
     </key>
     
-    <!-- Internal State Tracking (automatically managed) -->
-    <key name="last-activation-date" type="s">
+    <!-- Internal State Tracking (automatically managed, used for session locking or suspend) -->
+    <key name="persisted-timer-state" type="s">
       <default>''</default>
-      <summary>Last activation date</summary>
-      <description>ISO string of the last time timers were activated</description>
-    </key>
-    
-    <key name="last-deactivation-date" type="s">
-      <default>''</default>
-      <summary>Last deactivation date</summary>
-      <description>ISO string of the last time timers were deactivated</description>
+      <summary>Persisted timer state</summary>
+      <description>JSON string containing timer states for restoration after lock/unlock or suspend/resume</description>
     </key>
   </schema>
 </schemalist>

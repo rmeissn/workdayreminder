@@ -1,4 +1,3 @@
-import Gio from 'gi://Gio';
 import Adw from 'gi://Adw';
 import Gtk from 'gi://Gtk';
 

@@ -1,5 +1,4 @@
 import St from 'gi://St';
-import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
@@ -7,12 +6,11 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
- 
-// TODO: Timers automatically reset on login from e.g. lock screen
 
 const REPAINT_SECONDS = 10;
 const CHECK_TIMER_SECONDS = 10;
 const UPDATE_MENU_SECONDS = 30;
+const MAX_RESTORE_MINUTES = 15;
 
 // Utility functions
 const parseTime = timeString => timeString.split(':').map(Number);
@@ -75,7 +73,7 @@ export default class WorkDayReminder extends Extension {
         this._indicator = new PanelMenu.Button(0.0, this.metadata.name, false);
         this._container = new St.BoxLayout({ style_class: 'panel-status-menu-box' });
         this._icon = new St.DrawingArea({ width: 25, height: 25 });
-        this._icon.connect('repaint', (area) => repaint(area, this.calculatePercentageDone()));
+        this._iconConnection = this._icon.connect('repaint', (area) => repaint(area, this.calculatePercentageDone()));
         this._label = new St.Label({ text: 'No Timer', style_class: 'panel-button', y_align: 2 });
         
         this._container.add_child(this._icon);
@@ -84,16 +82,18 @@ export default class WorkDayReminder extends Extension {
         Main.panel.addToStatusArea(this.uuid, this._indicator);
     }
 
-    _updateTimerMenuItems() {
+    _updateTimerMenuItems(skipTimerStart = false) {
         // Remove all existing menu items
         this._indicator?.menu.removeAll();
         this._timerMenuItems = [];
         this._timers = this._loadTimers();
         
-        // Only reset active timers if we're not already running any
-        if (!this._activeTimers || this._activeTimers.length === 0) {
+        // Only reset active timers if we're not already running any and not explicitly skipping
+        if (!skipTimerStart && (!this._activeTimers || this._activeTimers.length === 0)) {
             this._activeTimers = [];
-            this._startValidTimers();
+            if (this._isWithinActiveHours()) {
+                this._startValidTimers();
+            }
         }
         
         this._updateLabel();
@@ -199,6 +199,77 @@ export default class WorkDayReminder extends Extension {
         }, 'Timer deactivation');
     }
 
+    // Timer State Persistence
+    _persistTimerState() {
+        if (!this._activeTimers?.length) {
+            this._settings.set_string('persisted-timer-state', '');
+            return;
+        }
+        
+        const now = new Date();
+        const state = {
+            disableTime: now.toISOString(),
+            activeTimers: this._activeTimers.map(timer => ({
+                timerIndex: timer.timerIndex,
+                remainingMinutes: Math.ceil((timer.endTime - now) / 60000)
+            }))
+        };
+        
+        try {
+            this._settings.set_string('persisted-timer-state', JSON.stringify(state));
+            console.log('Timer state persisted:', state);
+        } catch (e) {
+            console.warn('Failed to persist timer state:', e);
+        }
+    }
+
+    _tryRestoreTimerState() {
+        const stateString = this._settings.get_string('persisted-timer-state');
+        if (!stateString) return false;
+        
+        try {
+            const state = JSON.parse(stateString);
+            const disableTime = new Date(state.disableTime);
+            const now = new Date();
+            const pauseDurationMinutes = (now - disableTime) / 60000;
+            
+            // Clear state after reading
+            this._settings.set_string('persisted-timer-state', '');
+            
+            // Check if pause was longer than 15 minutes
+            if (pauseDurationMinutes > MAX_RESTORE_MINUTES) {
+                console.log(`Pause too long (${Math.round(pauseDurationMinutes)} min) - discarding timer state`);
+                return false;
+            }
+            
+            // Clear existing timers before restoring
+            this._activeTimers = [];
+            
+            // Restore timers with adjusted remaining time
+            state.activeTimers.forEach(timerState => {
+                const adjustedMinutes = Math.max(0, timerState.remainingMinutes - pauseDurationMinutes);
+                
+                if (adjustedMinutes > 0) {
+                    const startTime = new Date(now.getTime() - (timerState.remainingMinutes - adjustedMinutes) * 60000);
+                    this._activeTimers.push({
+                        timerIndex: timerState.timerIndex,
+                        startTime: startTime,
+                        endTime: new Date(now.getTime() + adjustedMinutes * 60000),
+                        notified: false
+                    });
+                }
+            });
+            
+            console.log(`Restored ${this._activeTimers.length} timers after ${Math.round(pauseDurationMinutes)} min pause`);
+            return this._activeTimers.length > 0;
+            
+        } catch (e) {
+            console.warn('Failed to restore timer state:', e);
+            this._settings.set_string('persisted-timer-state', '');
+            return false;
+        }
+    }
+
     // Extension Lifecycle
     enable() {
         try {
@@ -208,13 +279,18 @@ export default class WorkDayReminder extends Extension {
             this._activeNotifications = new Map(); // Track active notifications by timer index
             
             this._createPanelUI();
-            this._updateTimerMenuItems();
+            
+            // Try to restore timer state from previous session first
+            const restored = this._tryRestoreTimerState();
+            
+            // Update menu items, but skip timer start if we restored timers
+            this._updateTimerMenuItems(restored);
             
             this._settingsConnection = this._settings.connect('changed::timers', () => this._updateTimerMenuItems());
             this._checkActiveHours();
             
-            // Only start timers if we don't have any active ones yet AND we're within active hours
-            if ((!this._activeTimers || this._activeTimers.length === 0) && this._isWithinActiveHours()) {
+            // Only start new timers if no state was restored AND we're within active hours
+            if (!restored && this._isWithinActiveHours()) {
                 this._startValidTimers();
             }
             
@@ -246,6 +322,9 @@ export default class WorkDayReminder extends Extension {
 
     disable() {
         try {
+            // Persist timer state before cleanup
+            this._persistTimerState();
+            
             [this._repaintTimeOut, this._checkTimeOut, this._updateMenuTimeOut, 
              this._activationTimeOut, this._deactivationTimeOut].forEach(timeout => {
                 if (timeout) GLib.Source.remove(timeout);
@@ -255,10 +334,19 @@ export default class WorkDayReminder extends Extension {
                 this._settings.disconnect(this._settingsConnection);
             }
             
+            // Disconnect icon repaint signal
+            if (this._iconConnection && this._icon) {
+                this._icon.disconnect(this._iconConnection);
+            }
+            
             // Close all active notifications
             this._activeNotifications?.forEach((notification, timerIndex) => {
                 console.log(`Closing notification for timer ${timerIndex} during disable`);
-                notification.destroy();
+                try {
+                    notification.destroy();
+                } catch (e) {
+                    console.log('Notification already destroyed during disable');
+                }
             });
             this._activeNotifications?.clear();
             
@@ -273,10 +361,7 @@ export default class WorkDayReminder extends Extension {
             }
             
             Object.assign(this, {
-                _settings: null, _timers: null, _activeTimers: null, _icon: null, _label: null, 
-                _container: null, _indicator: null, _timerMenuItems: null, _settingsConnection: null,
-                _repaintTimeOut: null, _checkTimeOut: null, _updateMenuTimeOut: null,
-                _activationTimeOut: null, _deactivationTimeOut: null, _activeNotifications: null
+                _settings: null, _timers: null, _activeTimers: null, _icon: null, _label: null, _container: null, _indicator: null, _timerMenuItems: null, _settingsConnection: null, _iconConnection: null, _repaintTimeOut: null, _checkTimeOut: null, _updateMenuTimeOut: null, _activationTimeOut: null, _deactivationTimeOut: null, _activeNotifications: null
             });
         } catch (error) {
             console.error('Error disabling WorkDay Reminder extension:', error);
@@ -347,13 +432,13 @@ export default class WorkDayReminder extends Extension {
             // Store the notification for this timer
             this._activeNotifications.set(activeTimer.timerIndex, notification);
             
-            // Flag to track if an action has already been executed
-            let actionExecuted = false;
+            // Flag to prevent race conditions between button clicks and destroy events
+            let handlerExecuted = false;
             
             // Helper function to reset timer
             const resetTimer = (minutes) => () => {
-                if (actionExecuted) return;
-                actionExecuted = true;
+                if (handlerExecuted) return;
+                handlerExecuted = true;
                 console.log(`Resetting timer ${activeTimer.timerIndex} for ${minutes} minutes`);
                 this.addNewTimer(activeTimer.timerIndex, minutes);
             };
@@ -369,14 +454,28 @@ export default class WorkDayReminder extends Extension {
             
             // Handle notification events
             notification.connect('destroy', (notification, reason) => {
-                // Remove from active notifications when destroyed
+                // Always clean up our reference first
                 this._activeNotifications.delete(activeTimer.timerIndex);
                 
-                if (!actionExecuted && (reason === MessageTray.NotificationDestroyedReason.DISMISSED || reason === MessageTray.NotificationDestroyedReason.EXPIRED)) {
+                // Only auto-reset if no button was clicked and notification was dismissed/expired
+                // Also make sure we don't process if notification was destroyed by button click
+                if (!handlerExecuted && 
+                    (reason === MessageTray.NotificationDestroyedReason.DISMISSED || 
+                     reason === MessageTray.NotificationDestroyedReason.EXPIRED)) {
+                    handlerExecuted = true;
+                    console.log(`Notification dismissed - resetting timer ${activeTimer.timerIndex}`);
+                    // Use timeout to avoid race conditions with system cleanup
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1, () => {
+                        this.addNewTimer(activeTimer.timerIndex, timer.extraTime || timer.timeBetweenNotifications);
+                        return GLib.SOURCE_REMOVE;
+                    });
+                }
+            });
+            notification.connect('activated', () => {
+                if (!handlerExecuted) {
                     declineAction();
                 }
             });
-            notification.connect('activated', () => !actionExecuted && declineAction());
 
             // Show the notification
             source.addNotification(notification);
@@ -410,8 +509,8 @@ export default class WorkDayReminder extends Extension {
         const activeNotification = this._activeNotifications.get(timerIndex);
         if (activeNotification) {
             console.log(`Closing notification for timer ${timerIndex}`);
-            activeNotification.destroy();
             this._activeNotifications.delete(timerIndex);
+            // Don't try to destroy notification that might already be destroyed by the system
         }
         
         const now = new Date();
@@ -451,7 +550,11 @@ export default class WorkDayReminder extends Extension {
         // Close all active notifications
         this._activeNotifications.forEach((notification, timerIndex) => {
             console.log(`Closing notification for timer ${timerIndex}`);
-            notification.destroy();
+            try {
+                notification.destroy();
+            } catch (e) {
+                console.log('Notification already destroyed');
+            }
         });
         this._activeNotifications.clear();
         
