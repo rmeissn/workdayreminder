@@ -230,6 +230,7 @@ export default class WorkDayReminder extends Extension {
             this._settings = this.getSettings();
             this._activeTimers = [];
             this._timerMenuItems = [];
+            this._activeNotifications = new Map(); // Track active notifications by timer index
             
             this._createPanelUI();
             this._updateTimerMenuItems();
@@ -279,6 +280,13 @@ export default class WorkDayReminder extends Extension {
                 this._settings.disconnect(this._settingsConnection);
             }
             
+            // Close all active notifications
+            this._activeNotifications?.forEach((notification, timerIndex) => {
+                console.log(`Closing notification for timer ${timerIndex} during disable`);
+                notification.destroy();
+            });
+            this._activeNotifications?.clear();
+            
             this._timerMenuItems?.forEach(item => {
                 if (item && typeof item.destroy === 'function') {
                     item.destroy();
@@ -293,7 +301,7 @@ export default class WorkDayReminder extends Extension {
                 _settings: null, _timers: null, _activeTimers: null, _icon: null, _label: null, 
                 _container: null, _indicator: null, _timerMenuItems: null, _settingsConnection: null,
                 _repaintTimeOut: null, _checkTimeOut: null, _updateMenuTimeOut: null,
-                _activationTimeOut: null, _deactivationTimeOut: null
+                _activationTimeOut: null, _deactivationTimeOut: null, _activeNotifications: null
             });
         } catch (error) {
             console.error('Error disabling WorkDay Reminder extension:', error);
@@ -326,11 +334,13 @@ export default class WorkDayReminder extends Extension {
             if (activeTimer.endTime <= currentTime && !activeTimer.notified) {
                 console.log(`Timer ${activeTimer.timerIndex} has finished! Showing notification.`);
                 if (this._isValidTimerIndex(activeTimer.timerIndex)) {
+                    // Remove timer from active list BEFORE showing notification
+                    this._activeTimers.splice(i, 1);
                     this._showNotification(activeTimer);
                 } else {
                     console.warn(`Invalid timer index: ${activeTimer.timerIndex}`);
+                    this._activeTimers.splice(i, 1);
                 }
-                this._activeTimers.splice(i, 1);
             }
         }
     }
@@ -359,6 +369,9 @@ export default class WorkDayReminder extends Extension {
                 urgency: MessageTray.Urgency.CRITICAL
             });
             
+            // Store the notification for this timer
+            this._activeNotifications.set(activeTimer.timerIndex, notification);
+            
             // Flag to track if an action has already been executed
             let actionExecuted = false;
             
@@ -381,6 +394,9 @@ export default class WorkDayReminder extends Extension {
             
             // Handle notification events
             notification.connect('destroy', (notification, reason) => {
+                // Remove from active notifications when destroyed
+                this._activeNotifications.delete(activeTimer.timerIndex);
+                
                 if (!actionExecuted && (reason === MessageTray.NotificationDestroyedReason.DISMISSED || reason === MessageTray.NotificationDestroyedReason.EXPIRED)) {
                     declineAction();
                 }
@@ -402,12 +418,25 @@ export default class WorkDayReminder extends Extension {
         }
         
         activeTimer.notified = true;
+        
+        // Immediately refresh the panel UI when notification is shown
+        this._updateLabel();
+        this._icon?.queue_repaint();
+        this._updateTimerMenuTexts();
     }
 
     addNewTimer(timerIndex, minutes) {
         if (typeof timerIndex !== 'number' || typeof minutes !== 'number' || !this._isValidTimerIndex(timerIndex)) {
             console.warn('Invalid timer parameters:', { timerIndex, minutes });
             return;
+        }
+        
+        // Close any active notification for this timer
+        const activeNotification = this._activeNotifications.get(timerIndex);
+        if (activeNotification) {
+            console.log(`Closing notification for timer ${timerIndex}`);
+            activeNotification.destroy();
+            this._activeNotifications.delete(timerIndex);
         }
         
         const now = new Date();
@@ -437,13 +466,20 @@ export default class WorkDayReminder extends Extension {
     }
 
     getRemainingTimeForTimer(timerIndex) {
-        const activeTimer = this._activeTimers?.find(timer => timer.timerIndex === timerIndex);
+        const activeTimer = this._activeTimers?.find(timer => timer.timerIndex === timerIndex && !timer.notified);
         if (!activeTimer) return null;
         const remainingMs = activeTimer.endTime - new Date();
         return remainingMs <= 0 ? 0 : Math.ceil(remainingMs / 60000);
     }
 
     stopAllTimers() {
+        // Close all active notifications
+        this._activeNotifications.forEach((notification, timerIndex) => {
+            console.log(`Closing notification for timer ${timerIndex}`);
+            notification.destroy();
+        });
+        this._activeNotifications.clear();
+        
         this._activeTimers = [];
         this._updateLabel();
         this._icon?.queue_repaint();
