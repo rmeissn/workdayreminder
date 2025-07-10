@@ -2,7 +2,7 @@
   "shell-version": ["48"],
   "uuid": "workdayreminder@rmeissn.gitlab.io",
   "name": "Workday Reminder",
-  "description": "Boost your workday wellness with customizable reminders for breaks, hydration, posture checks, and more. Features smart scheduling, visual progress indicators, and flexible notification postponing to help you maintain healthy work habits without disrupting your flow.\n\nBased on https://github.com/CastilloDel/simplebreakreminder but extensively extended and reworked",
+  "description": "Boost your workday wellness with customizable reminders for breaks, hydration, posture checks, and more. Features smart scheduling, visual progress indicators, and flexible notification postponing to help you maintain healthy work habits without disrupting your flow.\n\nExample configurations:\n- Pomodoro: Focus for 25 minutes, optionally postpone for 1 minute, with the message Take a 5-minute break.\n- Deep work cycles: Focus for 2–3 hours, optionally postpone for 10 minutes, with the message Take a 10–15 minute break, do some stretching.\n- Hydration: Remind to Drink some water every 60 minutes (ignore postponing).\n- Posture checks: Try to get active every 2 hours, optionally postpone for 10 minutes.\n\nBased on https://github.com/CastilloDel/simplebreakreminder but extensively extended and reworked",
   "url": "https://github.com/rmeissn/workdayreminder",
   "settings-schema": "org.gnome.shell.extensions.workdayreminder"
 }

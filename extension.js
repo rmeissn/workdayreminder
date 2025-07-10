@@ -8,6 +8,10 @@ import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
+// TODO:
+// - Timers are automatically reset on login from e.g. lock screen, while the notification is still shown
+// - 
+
 const REPAINT_SECONDS = 10;
 const CHECK_TIMER_SECONDS = 10;
 const UPDATE_MENU_SECONDS = 30;
