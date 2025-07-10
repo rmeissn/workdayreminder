@@ -6,6 +6,15 @@ import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/ex
 
 export default class ExamplePreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
+        // Aarrays to track signal handlers and timeouts for cleanup
+        this._signalConnections = [];
+        this._activeTimeouts = [];
+
+        // Clean up all object references when window closes
+        window.connect('close-request', () => {
+            this._cleanup();
+        });
+
         this._settings = this.getSettings();
         this._timers = this._loadTimers();
         
@@ -40,13 +49,13 @@ export default class ExamplePreferences extends ExtensionPreferences {
         scheduleGroup.add(deactivateTimeRow);
 
         // Add timer button group (moved after schedule)
-        this._addTimerGroup = new Adw.PreferencesGroup({
+        const addTimerGroup = new Adw.PreferencesGroup({
             title: 'Timer Management',
         });
-        page.add(this._addTimerGroup);
+        page.add(addTimerGroup);
 
         // Add button row
-        this._addButtonRow = new Adw.ActionRow({
+        const addButtonRow = new Adw.ActionRow({
             title: 'Add new timer',
             subtitle: 'Create a new timer with custom settings',
         });
@@ -56,10 +65,11 @@ export default class ExamplePreferences extends ExtensionPreferences {
             valign: Gtk.Align.CENTER,
             css_classes: ['suggested-action'],
         });
-        addButton.connect('clicked', () => this._addNewTimer());
-        this._addButtonRow.add_suffix(addButton);
+        const addButtonHandlerId = addButton.connect('clicked', () => this._addNewTimer());
+        this._signalConnections.push({ object: addButton, handlerId: addButtonHandlerId });
+        addButtonRow.add_suffix(addButton);
         
-        this._addTimerGroup.add(this._addButtonRow);
+        addTimerGroup.add(addButtonRow);
 
         // Store reference to the page for adding timer groups
         this._page = page;
@@ -120,9 +130,36 @@ export default class ExamplePreferences extends ExtensionPreferences {
     }
 
     _refreshTimersList() {
+        // Clean up signal handlers for widgets being removed
+        this._signalConnections = this._signalConnections.filter(({ object }) => {
+            // Check if the object is still part of the current timer groups
+            let keepConnection = true;
+            for (const group of this._timerGroups) {
+                if (this._isWidgetInGroup(object, group)) {
+                    keepConnection = false;
+                    break;
+                }
+            }
+            return keepConnection;
+        });
+        
         this._timerGroups.forEach(group => this._page.remove(group));
         this._timerGroups = [];
         this._timers.forEach((timer, index) => this._createTimerGroup(timer, index));
+    }
+
+    _isWidgetInGroup(widget, group) {
+        // Helper method to check if a widget belongs to a group, this is a simplified check
+        try {
+            let current = widget;
+            while (current) {
+                if (current === group) return true;
+                current = current.get_parent();
+            }
+        } catch (e) {
+            // Widget might be destroyed
+        }
+        return false;
     }
 
     _createTimerGroup(timer, index) {
@@ -139,7 +176,8 @@ export default class ExamplePreferences extends ExtensionPreferences {
                 css_classes: ['destructive-action'],
                 tooltip_text: 'Delete this timer',
             });
-            deleteButton.connect('clicked', () => this._removeTimer(index));
+            const deleteHandlerId = deleteButton.connect('clicked', () => this._removeTimer(index));
+            this._signalConnections.push({ object: deleteButton, handlerId: deleteHandlerId });
             nameRow.add_suffix(deleteButton);
         }
         timerGroup.add(nameRow);
@@ -156,13 +194,15 @@ export default class ExamplePreferences extends ExtensionPreferences {
         row.title = title;
         row.subtitle = subtitle;
         row.value = value;
-        row.connect('changed', () => this._updateTimer(index, property, row.get_value()));
+        const handlerId = row.connect('changed', () => this._updateTimer(index, property, row.get_value()));
+        this._signalConnections.push({ object: row, handlerId });
         return row;
     }
 
     _createEntryRow(title, text, index, property) {
         const row = new Adw.EntryRow({ title, text: text || '' });
-        row.connect('changed', () => this._updateTimer(index, property, row.get_text()));
+        const handlerId = row.connect('changed', () => this._updateTimer(index, property, row.get_text()));
+        this._signalConnections.push({ object: row, handlerId });
         return row;
     }
 
@@ -196,15 +236,32 @@ export default class ExamplePreferences extends ExtensionPreferences {
         // Debounced update handler
         let timeoutId = null;
         const updateTime = () => {
-            if (timeoutId) clearTimeout(timeoutId);
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+                // Remove the old timeout from tracking
+                const index = this._activeTimeouts.indexOf(timeoutId);
+                if (index > -1) this._activeTimeouts.splice(index, 1);
+            }
+            
             timeoutId = setTimeout(() => {
-                const timeString = `${hourSpin.get_value().toString().padStart(2, '0')}:${minuteSpin.get_value().toString().padStart(2, '0')}`;
-                this._settings.set_string(settingKey, timeString);
+                // Add null check to prevent errors after cleanup
+                if (this._settings) {
+                    const timeString = `${hourSpin.get_value().toString().padStart(2, '0')}:${minuteSpin.get_value().toString().padStart(2, '0')}`;
+                    this._settings.set_string(settingKey, timeString);
+                }
+                // Remove timeout from tracking once it's executed
+                const index = this._activeTimeouts.indexOf(timeoutId);
+                if (index > -1) this._activeTimeouts.splice(index, 1);
             }, 200);
+            
+            // Track the new timeout
+            this._activeTimeouts.push(timeoutId);
         };
 
-        hourSpin.connect('value-changed', updateTime);
-        minuteSpin.connect('value-changed', updateTime);
+        const hourHandlerId = hourSpin.connect('value-changed', updateTime);
+        const minuteHandlerId = minuteSpin.connect('value-changed', updateTime);
+        this._signalConnections.push({ object: hourSpin, handlerId: hourHandlerId });
+        this._signalConnections.push({ object: minuteSpin, handlerId: minuteHandlerId });
         timeRow.add_suffix(timeBox);
         return timeRow;
     }
@@ -219,11 +276,38 @@ export default class ExamplePreferences extends ExtensionPreferences {
             width_chars: 2,
         });
         
-        spinner.connect('output', () => {
+        const outputHandlerId = spinner.connect('output', () => {
             spinner.set_text(spinner.get_value().toString().padStart(2, '0'));
             return true;
         });
+        this._signalConnections.push({ object: spinner, handlerId: outputHandlerId });
         
         return spinner;
+    }
+
+    _cleanup() {
+        // Clear all active timeouts
+        this._activeTimeouts.forEach(timeoutId => {
+            if (timeoutId) clearTimeout(timeoutId);
+        });
+        this._activeTimeouts = [];
+
+        // Disconnect all signal handlers
+        this._signalConnections.forEach(({ object, handlerId }) => {
+            if (object && handlerId) {
+                try {
+                    object.disconnect(handlerId);
+                } catch (e) {
+                    console.warn('Failed to disconnect signal handler:', e);
+                }
+            }
+        });
+        this._signalConnections = [];
+
+        // Clear object references
+        this._settings = null;
+        this._timers = null;
+        this._page = null;
+        this._timerGroups = null;
     }
 }
