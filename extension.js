@@ -7,10 +7,8 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
-
-// TODO:
-// - Timers are automatically reset on login from e.g. lock screen, while the notification is still shown
-// - 
+ 
+// TODO: Timers automatically reset on login from e.g. lock screen
 
 const REPAINT_SECONDS = 10;
 const CHECK_TIMER_SECONDS = 10;
@@ -163,29 +161,12 @@ export default class WorkDayReminder extends Extension {
         console.log('All timers started');
     }
 
-    _checkForMissedActivation() {
-        const now = new Date();
-        const lastActivationKey = 'last-activation-date';
-        
-        try {
-            const lastActivationString = this._settings.get_string(lastActivationKey);
-            const lastActivationDate = lastActivationString ? new Date(lastActivationString) : null;
-            const [activateHour, activateMinute] = parseTime(this._settings.get_string('activate-time'));
-            const todayActivation = new Date(now);
-            todayActivation.setHours(activateHour, activateMinute, 0, 0);
-            
-            // Only activate if we're currently within active hours AND haven't activated today yet
-            if (now >= todayActivation && (!lastActivationDate || lastActivationDate < todayActivation) && this._isWithinActiveHours()) {
-                console.log('Missed activation detected - performing activation now');
-                this.stopAllTimers();
-                this._startAllTimers();
-                this._settings.set_string(lastActivationKey, now.toISOString());
-            } else if (!this._isWithinActiveHours()) {
-                console.log('Outside active hours - not starting timers');
-                this.stopAllTimers();
-            }
-        } catch (e) {
-            console.warn('Error checking for missed activation:', e);
+    _checkActiveHours() {
+        if (!this._isWithinActiveHours()) {
+            console.log('Outside active hours - stopping timers');
+            this.stopAllTimers();
+        } else {
+            console.log('Within active hours - timers can run');
         }
     }
 
@@ -210,17 +191,11 @@ export default class WorkDayReminder extends Extension {
         const deactivateTime = this._settings.get_string('deactivate-time');
         
         this._activationTimeOut = this._scheduleTimer(activateTime, () => {
-            this.stopAllTimers();
-            GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
-                this._startAllTimers();
-                this._settings.set_string('last-activation-date', new Date().toISOString());
-                return GLib.SOURCE_REMOVE;
-            });
+            this._startAllTimers();
         }, 'Timer activation');
         
         this._deactivationTimeOut = this._scheduleTimer(deactivateTime, () => {
             this.stopAllTimers();
-            this._settings.set_string('last-deactivation-date', new Date().toISOString());
         }, 'Timer deactivation');
     }
 
@@ -236,7 +211,7 @@ export default class WorkDayReminder extends Extension {
             this._updateTimerMenuItems();
             
             this._settingsConnection = this._settings.connect('changed::timers', () => this._updateTimerMenuItems());
-            this._checkForMissedActivation();
+            this._checkActiveHours();
             
             // Only start timers if we don't have any active ones yet AND we're within active hours
             if ((!this._activeTimers || this._activeTimers.length === 0) && this._isWithinActiveHours()) {
@@ -259,7 +234,7 @@ export default class WorkDayReminder extends Extension {
         
         this._checkTimeOut = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, CHECK_TIMER_SECONDS, () => {
             this.check();
-            this._checkForMissedActivation();
+            this._checkActiveHours();
             return GLib.SOURCE_CONTINUE;
         });
         
