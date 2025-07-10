@@ -12,6 +12,15 @@ const CHECK_TIMER_SECONDS = 10;
 const UPDATE_MENU_SECONDS = 30;
 const MAX_RESTORE_MINUTES = 15;
 
+// Debug mode configuration
+const DEBUG_MODE = GLib.getenv('WORKDAY_REMINDER_DEBUG') === '1' || 
+                   GLib.getenv('G_MESSAGES_DEBUG') === 'all';
+
+// Debug logging function
+const debugLog = (message, ...args) => {
+    if (DEBUG_MODE) console.log(`[WorkdayReminder Debug] ${message}`, ...args);
+};
+
 // Utility functions
 const parseTime = timeString => timeString.split(':').map(Number);
 const timeToMinutes = (hour, minute) => hour * 60 + minute;
@@ -154,28 +163,28 @@ export default class WorkDayReminder extends Extension {
 
     _startAllTimers() {
         if (!this._isWithinActiveHours()) {
-            console.log('Not within active hours - timers not started');
+            debugLog('Not within active hours - timers not started');
             return;
         }
         this._startValidTimers();
-        console.log('All timers started');
+        debugLog('All timers started');
     }
 
     _checkActiveHours() {
         if (!this._isWithinActiveHours()) {
-            console.log('Outside active hours - stopping timers');
+            debugLog('Outside active hours - stopping timers');
             this.stopAllTimers();
         } else {
-            console.log('Within active hours - timers can run');
+            debugLog('Within active hours - timers can run');
         }
     }
 
     _scheduleTimer(timeString, action, logPrefix) {
         const secondsUntil = Math.ceil(calculateTimeUntil(timeString) / 1000);
-        console.log(`Scheduling ${logPrefix} in ${secondsUntil} seconds at ${timeString}`);
+        debugLog(`Scheduling ${logPrefix} in ${secondsUntil} seconds at ${timeString}`);
         
         return GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, secondsUntil, () => {
-            console.log(`${logPrefix} at ${timeString} triggered`);
+            debugLog(`${logPrefix} at ${timeString} triggered`);
             action();
             this._scheduleTimerActivation();
             return GLib.SOURCE_REMOVE;
@@ -217,7 +226,7 @@ export default class WorkDayReminder extends Extension {
         
         try {
             this._settings.set_string('persisted-timer-state', JSON.stringify(state));
-            console.log('Timer state persisted:', state);
+            debugLog('Timer state persisted:', state);
         } catch (e) {
             console.warn('Failed to persist timer state:', e);
         }
@@ -238,7 +247,7 @@ export default class WorkDayReminder extends Extension {
             
             // Check if pause was longer than 15 minutes
             if (pauseDurationMinutes > MAX_RESTORE_MINUTES) {
-                console.log(`Pause too long (${Math.round(pauseDurationMinutes)} min) - discarding timer state`);
+                debugLog(`Pause too long (${Math.round(pauseDurationMinutes)} min) - discarding timer state`);
                 return false;
             }
             
@@ -260,7 +269,7 @@ export default class WorkDayReminder extends Extension {
                 }
             });
             
-            console.log(`Restored ${this._activeTimers.length} timers after ${Math.round(pauseDurationMinutes)} min pause`);
+            debugLog(`Restored ${this._activeTimers.length} timers after ${Math.round(pauseDurationMinutes)} min pause`);
             return this._activeTimers.length > 0;
             
         } catch (e) {
@@ -277,6 +286,7 @@ export default class WorkDayReminder extends Extension {
             this._activeTimers = [];
             this._timerMenuItems = [];
             this._activeNotifications = new Map(); // Track active notifications by timer index
+            this._notificationSource = null; // Reusable notification source
             
             this._createPanelUI();
             
@@ -341,14 +351,20 @@ export default class WorkDayReminder extends Extension {
             
             // Close all active notifications
             this._activeNotifications?.forEach((notification, timerIndex) => {
-                console.log(`Closing notification for timer ${timerIndex} during disable`);
+                debugLog(`Closing notification for timer ${timerIndex} during disable`);
                 try {
                     notification.destroy();
                 } catch (e) {
-                    console.log('Notification already destroyed during disable');
+                    debugLog('Notification already destroyed during disable');
                 }
             });
             this._activeNotifications?.clear();
+            
+            // Cleanup notification source
+            if (this._notificationSource) {
+                this._notificationSource.destroy();
+                this._notificationSource = null;
+            }
             
             this._timerMenuItems?.forEach(item => {
                 if (item && typeof item.destroy === 'function') {
@@ -361,7 +377,7 @@ export default class WorkDayReminder extends Extension {
             }
             
             Object.assign(this, {
-                _settings: null, _timers: null, _activeTimers: null, _icon: null, _label: null, _container: null, _indicator: null, _timerMenuItems: null, _settingsConnection: null, _iconConnection: null, _repaintTimeOut: null, _checkTimeOut: null, _updateMenuTimeOut: null, _activationTimeOut: null, _deactivationTimeOut: null, _activeNotifications: null
+                _settings: null, _timers: null, _activeTimers: null, _icon: null, _label: null, _container: null, _indicator: null, _timerMenuItems: null, _settingsConnection: null, _iconConnection: null, _repaintTimeOut: null, _checkTimeOut: null, _updateMenuTimeOut: null, _activationTimeOut: null, _deactivationTimeOut: null, _activeNotifications: null, _notificationSource: null
             });
         } catch (error) {
             console.error('Error disabling WorkDay Reminder extension:', error);
@@ -377,7 +393,7 @@ export default class WorkDayReminder extends Extension {
         }
         
         const currentTime = new Date();
-        console.log(`Checking ${this._activeTimers.length} active timers at ${currentTime.toLocaleTimeString()}`);
+        debugLog(`Checking ${this._activeTimers.length} active timers at ${currentTime.toLocaleTimeString()}`);
         
         for (let i = this._activeTimers.length - 1; i >= 0; i--) {
             const activeTimer = this._activeTimers[i];
@@ -389,10 +405,10 @@ export default class WorkDayReminder extends Extension {
             }
             
             const timeRemaining = activeTimer.endTime - currentTime;
-            console.log(`Timer ${activeTimer.timerIndex}: ${Math.round(timeRemaining/1000)}s remaining, notified: ${activeTimer.notified}`);
+            debugLog(`Timer ${activeTimer.timerIndex}: ${Math.round(timeRemaining/1000)}s remaining, notified: ${activeTimer.notified}`);
             
             if (activeTimer.endTime <= currentTime && !activeTimer.notified) {
-                console.log(`Timer ${activeTimer.timerIndex} has finished! Showing notification.`);
+                debugLog(`Timer ${activeTimer.timerIndex} has finished! Showing notification.`);
                 if (this._isValidTimerIndex(activeTimer.timerIndex)) {
                     // Remove timer from active list BEFORE showing notification
                     this._activeTimers.splice(i, 1);
@@ -409,21 +425,22 @@ export default class WorkDayReminder extends Extension {
 
     _showNotification(activeTimer) {
         const timer = this._timers[activeTimer.timerIndex];
-        console.log(`Notification for timer ${activeTimer.timerIndex}: ${timer.name}`);
+        debugLog(`Notification for timer ${activeTimer.timerIndex}: ${timer.name}`);
         
         try {
-            // Create a source for the notification
-            const source = new MessageTray.Source({
-                title: 'Workday Reminder',
-                iconName: 'alarm-symbolic'
-            });
-            
-            // Add the source to the message tray
-            Main.messageTray.add(source);
+            // Create or reuse notification source
+            if (!this._notificationSource) {
+                this._notificationSource = new MessageTray.Source({
+                    title: 'Workday Reminder',
+                    iconName: 'alarm-symbolic'
+                });
+                // Add the source to the message tray
+                Main.messageTray.add(this._notificationSource);
+            }
 
             // Create the notification
             const notification = new MessageTray.Notification({
-                source: source,
+                source: this._notificationSource,
                 title: `${timer.name} Reminder`,
                 body: timer.message || `Time for your ${timer.name} break!`,
                 urgency: MessageTray.Urgency.CRITICAL
@@ -439,7 +456,7 @@ export default class WorkDayReminder extends Extension {
             const resetTimer = (minutes) => () => {
                 if (handlerExecuted) return;
                 handlerExecuted = true;
-                console.log(`Resetting timer ${activeTimer.timerIndex} for ${minutes} minutes`);
+                debugLog(`Resetting timer ${activeTimer.timerIndex} for ${minutes} minutes`);
                 this.addNewTimer(activeTimer.timerIndex, minutes);
             };
             
@@ -463,12 +480,8 @@ export default class WorkDayReminder extends Extension {
                     (reason === MessageTray.NotificationDestroyedReason.DISMISSED || 
                      reason === MessageTray.NotificationDestroyedReason.EXPIRED)) {
                     handlerExecuted = true;
-                    console.log(`Notification dismissed - resetting timer ${activeTimer.timerIndex}`);
-                    // Use timeout to avoid race conditions with system cleanup
-                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1, () => {
-                        this.addNewTimer(activeTimer.timerIndex, timer.extraTime || timer.timeBetweenNotifications);
-                        return GLib.SOURCE_REMOVE;
-                    });
+                    debugLog(`Notification dismissed - resetting timer ${activeTimer.timerIndex}`);
+                    this.addNewTimer(activeTimer.timerIndex, timer.extraTime || timer.timeBetweenNotifications);
                 }
             });
             notification.connect('activated', () => {
@@ -478,7 +491,7 @@ export default class WorkDayReminder extends Extension {
             });
 
             // Show the notification
-            source.addNotification(notification);
+            this._notificationSource.addNotification(notification);
             
         } catch (error) {
             console.error('Error showing notification:', error);
@@ -487,7 +500,7 @@ export default class WorkDayReminder extends Extension {
             
             // Still reset the timer
             const resetTime = timer.extraTime || timer.timeBetweenNotifications;
-            console.log(`Fallback: resetting timer ${activeTimer.timerIndex} for ${resetTime} minutes`);
+            debugLog(`Fallback: resetting timer ${activeTimer.timerIndex} for ${resetTime} minutes`);
             this.addNewTimer(activeTimer.timerIndex, resetTime);
         }
         
@@ -508,7 +521,7 @@ export default class WorkDayReminder extends Extension {
         // Close any active notification for this timer
         const activeNotification = this._activeNotifications.get(timerIndex);
         if (activeNotification) {
-            console.log(`Closing notification for timer ${timerIndex}`);
+            debugLog(`Closing notification for timer ${timerIndex}`);
             this._activeNotifications.delete(timerIndex);
             // Don't try to destroy notification that might already be destroyed by the system
         }
@@ -549,11 +562,11 @@ export default class WorkDayReminder extends Extension {
     stopAllTimers() {
         // Close all active notifications
         this._activeNotifications.forEach((notification, timerIndex) => {
-            console.log(`Closing notification for timer ${timerIndex}`);
+            debugLog(`Closing notification for timer ${timerIndex}`);
             try {
                 notification.destroy();
             } catch (e) {
-                console.log('Notification already destroyed');
+                debugLog('Notification already destroyed');
             }
         });
         this._activeNotifications.clear();
@@ -562,7 +575,7 @@ export default class WorkDayReminder extends Extension {
         this._updateLabel();
         this._icon?.queue_repaint();
         this._updateTimerMenuTexts();
-        console.log('All timers stopped');
+        debugLog('All timers stopped');
     }
 
     openPreferences() {
